@@ -5,22 +5,27 @@ Este proyecto es un chatbot impulsado por IA diseñado para actuar como un agent
 ## Características
 
 - **Dominio Específico:** Entrenado con información detallada sobre atracciones, precios, horarios y consejos para visitar las Cataratas del Niágara.
-- **Generación Aumentada por Recuperación (RAG):** Utiliza una base de datos vectorial para encontrar la información más relevante y la proporciona a un Modelo de Lenguaje Grande (LLM) para generar respuestas precisas y contextualizadas.
-- **Modelo de Lenguaje:** Impulsado por la API de Gemini de Google (`gemini-pro`).
-- **Embeddings:** Usa `models/embedding-001` de Google para la generación de embeddings.
-- **Base de Datos Vectorial:** Implementado con FAISS para un almacenamiento y recuperación eficiente de vectores en memoria.
+- **Generación Aumentada por Recuperación (RAG):** Utiliza una base de datos vectorial para encontrar la información más relevante y la proporciona a un Modelo de Lenguaje Grande (LLM) para generar respuestas precisas.
+- **Modelo de Lenguaje:** Impulsado por la API de Gemini de Google (`gemini-1.5-flash-latest`).
+- **Embeddings Locales:** Usa `HuggingFaceEmbeddings` con el modelo `sentence-transformers/all-MiniLM-L6-v2` para generar embeddings localmente, sin coste ni cuotas de API.
+- **Base de Datos Vectorial:** Utiliza **MongoDB Atlas** para un almacenamiento y recuperación eficiente de vectores en la nube.
 - **Prompt Engineering:** El chatbot adopta la personalidad de un "amigable y servicial agente de viajes" para ofrecer una experiencia de usuario agradable.
 - **Interfaz de Usuario:** Interacción a través de una sencilla aplicación de línea de comandos (CLI).
 
 ## ¿Cómo Funciona?
 
-El chatbot sigue un proceso de RAG para responder a las preguntas:
+El chatbot sigue un proceso de RAG que se divide en dos etapas principales:
 
-1.  **Carga de Datos:** Lee un documento de texto (`.txt`) que contiene la guía de viaje de las Cataratas del Niágara.
-2.  **Chunking:** Divide el documento en fragmentos de texto más pequeños para facilitar el procesamiento.
-3.  **Embeddings y Almacenamiento:** Cada fragmento se convierte en un vector numérico (embedding) y se almacena en un índice de FAISS. Este índice se guarda localmente para evitar tener que regenerarlo en cada ejecución.
-4.  **Recuperación:** Cuando un usuario hace una pregunta, el chatbot convierte la pregunta en un embedding y busca en el índice de FAISS los fragmentos de texto más similares semánticamente.
-5.  **Generación:** Los fragmentos recuperados (el contexto) y la pregunta original del usuario se envían al LLM (Gemini) a través de un prompt diseñado específicamente. El modelo utiliza esta información para generar una respuesta coherente y precisa.
+1.  **Fase de Indexación (una sola vez):**
+    - Se ejecuta el script `src/setup_vector_store.py`.
+    - Este script carga la guía de viaje, la divide en fragmentos (`chunks`), y genera embeddings para cada uno utilizando el modelo de Hugging Face.
+    - Finalmente, almacena estos embeddings en la colección especificada de MongoDB Atlas.
+
+2.  **Fase de Inferencia (en cada ejecución):**
+    - Se ejecuta el script principal `src/chatbot.py`.
+    - El chatbot se conecta a la base de datos vectorial de MongoDB Atlas ya existente.
+    - Cuando un usuario hace una pregunta, el sistema busca los documentos más relevantes en la base de datos.
+    - Estos documentos (el contexto) y la pregunta del usuario se envían al LLM (`gemini-1.5-flash-latest`), que genera una respuesta coherente y precisa.
 
 ## Instalación
 
@@ -34,7 +39,7 @@ Sigue estos pasos para configurar el entorno de desarrollo local.
 
 2.  **Crea y activa un entorno virtual:**
     ```bash
-    python -m venv venv
+    python3 -m venv venv
     source venv/bin/activate  # En Windows: venv\Scripts\activate
     ```
 
@@ -43,25 +48,34 @@ Sigue estos pasos para configurar el entorno de desarrollo local.
     pip install -r requirements.txt
     ```
 
-4.  **Configura tu clave de API:**
+4.  **Configura las variables de entorno:**
     - Renombra el archivo `.env.example` a `.env`.
-    - Abre el archivo `.env` y reemplaza `"YOUR_API_KEY_HERE"` con tu clave de la API de Google Gemini. Puedes obtener una en [Google AI Studio](https://aistudio.google.com/app/apikey).
+    - Abre el archivo `.env` y añade tus credenciales:
+      - `GOOGLE_API_KEY`: Tu clave de la API de Google Gemini. Puedes obtener una en [Google AI Studio](https://aistudio.google.com/app/apikey).
+      - `MONGO_URI`: Tu cadena de conexión a MongoDB Atlas.
+      - `DB_NAME`: El nombre de tu base de datos en Atlas.
+      - `COLLECTION_NAME`: El nombre de la colección donde se guardarán los vectores.
 
 ## Uso
 
-Para iniciar el chatbot, ejecuta el siguiente comando desde el directorio raíz del proyecto:
+El proceso de ejecución se realiza en dos pasos:
 
-```bash
-python src/chatbot.py
-```
+1.  **Poblar la base de datos (solo la primera vez):**
+    Ejecuta el siguiente comando para procesar tu documento y almacenar los embeddings en MongoDB Atlas. La primera vez, descargará el modelo de embeddings, lo cual puede tardar un momento.
+    ```bash
+    python3 src/setup_vector_store.py
+    ```
 
-La primera vez que lo ejecutes, creará y guardará el índice FAISS. Las siguientes veces, lo cargará desde el disco, haciendo el inicio más rápido.
+2.  **Iniciar el chatbot:**
+    Una vez que la base de datos esté poblada, puedes iniciar el chatbot en cualquier momento con este comando:
+    ```bash
+    python3 src/chatbot.py
+    ```
 
 Una vez iniciado, puedes hacerle preguntas sobre las Cataratas del Niágara. Para salir, escribe `salir`.
 
 **Ejemplos de preguntas:**
-- `¿Qué puedo hacer en las cataratas del Niágara?`
+- `¿Qué miradores gratuitos hay?`
 - `¿Cuánto cuesta el paseo en barco?`
 - `¿Cuál es la mejor época para visitar?`
-- `¿Cómo llego desde Toronto?`
 

@@ -2,55 +2,68 @@
 
 Este documento detalla el proceso de diseño, implementación y evaluación del chatbot de agente de viajes para las Cataratas del Niágara.
 
-## 1. Desafíos Enfrentados
+## 1. ¿Qué desafíos enfrentaste construyendo el chatbot?
 
-*(Aquí puedes describir los obstáculos que encontraste. Por ejemplo:)*
+Durante el desarrollo del chatbot, me encontré con varios desafíos técnicos significativos que requirieron un proceso de depuración iterativo:
 
-- **Recopilación de Datos:** Encontrar una fuente de datos única, completa y estructurada fue un desafío inicial. La información en la web a menudo está fragmentada, por lo que fue necesario consolidar y limpiar el contenido de una guía de viaje para crear una base de conocimientos coherente.
-- **Configuración del Entorno:** Asegurarse de que todas las dependencias, especialmente las relacionadas con `langchain` y `faiss-cpu`, fueran compatibles y se instalaran correctamente requirió algo de depuración.
-- **Optimización del Prompt:** Lograr que el chatbot respondiera de manera concisa y se adhiriera a su persona de "agente de viajes" sin inventar información requirió varias iteraciones en el diseño del prompt.
+1.  **Agotamiento de la Cuota de la API de Google (Error `ResourceExhausted`):**
+    - **Problema:** El script inicial intentaba generar embeddings en cada ejecución, lo que agotó rápidamente la cuota del nivel gratuito de la API de Google AI para el modelo de embeddings.
+    - **Solución:** El primer paso fue separar la lógica de indexación (creación de embeddings) en un script `setup_vector_store.py` para que se ejecutara una sola vez. Sin embargo, la cuota ya estaba agotada. La solución definitiva fue **reemplazar los embeddings de Google por un modelo de código abierto** (`sentence-transformers/all-MiniLM-L6-v2`) a través de la clase `HuggingFaceEmbeddings`. Esto eliminó la dependencia de la API de Google para esta tarea, resolviendo por completo el problema de la cuota y haciendo el sistema más robusto.
+
+2.  **Modelo de Lenguaje no Encontrado (Error `NotFound`):**
+    - **Problema:** Después de solucionar el problema de los embeddings, el chatbot fallaba al generar respuestas con un error 404, indicando que el modelo `gemini-pro` (y luego `gemini-1.0-pro`) no se encontraba para la versión `v1beta` de la API.
+    - **Solución:** Identifiqué que el problema probablemente se debía al uso de funciones obsoletas de LangChain (`load_qa_chain`) que podrían estar llamando a una versión antigua de la API. La solución fue **refactorizar todo el pipeline de RAG para usar la sintaxis moderna de LangChain (LCEL)**, utilizando `create_stuff_documents_chain` y `create_retrieval_chain`. Como parte de esta modernización, también actualicé el nombre del modelo a `gemini-1.5-flash-latest`, una versión más reciente y estable.
+
+3.  **Error de Variable en el Prompt (Error `KeyError`):**
+    - **Problema:** La nueva cadena LCEL esperaba que la pregunta del usuario se pasara con la clave `input`, pero mi plantilla de prompt todavía usaba `{question}`.
+    - **Solución:** Fue un ajuste sencillo pero crucial: actualicé la plantilla del prompt para que usara `{input}` en lugar de `{question}`, sincronizando así la entrada de la cadena con las expectativas de la plantilla.
 
 ## 2. ¿Cómo Funciona el Chatbot?
 
-*(Explica la arquitectura general del chatbot. Puedes reutilizar parte de la explicación del README, pero con más detalle técnico.)*
+El chatbot opera sobre un pipeline de Generación Aumentada por Recuperación (RAG) modernizado. El flujo de trabajo se divide en dos fases:
 
-El chatbot opera sobre un pipeline de Generación Aumentada por Recuperación (RAG). El flujo de trabajo es el siguiente:
+1.  **Fase de Indexación (ejecutada una sola vez con `setup_vector_store.py`):**
+    - Un script de configuración carga el contenido de la guía de viaje desde un archivo de texto.
+    - El texto se divide en fragmentos (`chunks`) utilizando `RecursiveCharacterTextSplitter`.
+    - Cada fragmento es procesado por el modelo de embeddings de código abierto **`sentence-transformers/all-MiniLM-L6-v2`** a través de `HuggingFaceEmbeddings`. Este proceso se ejecuta localmente, sin consumir cuotas de API.
+    - Los vectores resultantes se almacenan en una colección de **MongoDB Atlas**, que actúa como nuestra base de datos vectorial.
 
-1.  **Fase de Indexación (se ejecuta una sola vez):**
-    - El sistema carga el contenido de la guía de viaje desde un archivo de texto.
-    - El texto se divide en fragmentos (`chunks`) de aproximadamente 1000 caracteres, con una superposición de 200 caracteres para mantener el contexto entre ellos.
-    - Cada fragmento es procesado por el modelo de embeddings `models/embedding-001` de Google para generar un vector numérico.
-    - Estos vectores se almacenan en un índice de FAISS, que se guarda en el disco para un acceso rápido en futuras ejecuciones.
-
-2.  **Fase de Inferencia (se ejecuta para cada pregunta):**
-    - La pregunta del usuario se convierte en un vector utilizando el mismo modelo de embeddings.
-    - Se realiza una búsqueda de similitud en el índice FAISS para encontrar los 3 fragmentos de texto más relevantes para la pregunta.
-    - Estos fragmentos, junto con la pregunta original, se insertan en una plantilla de prompt.
-    - El prompt completo se envía al modelo `gemini-pro`, que genera una respuesta en lenguaje natural basada en el contexto proporcionado.
+2.  **Fase de Inferencia (ejecutada por `chatbot.py` para cada pregunta):**
+    - El script principal se conecta a la base de datos de MongoDB Atlas ya poblada.
+    - La pregunta del usuario se pasa a una cadena de LangChain (LCEL).
+    - La cadena primero convierte la pregunta en un vector (usando el mismo modelo de Hugging Face) y busca en MongoDB Atlas los 3 fragmentos de texto más relevantes.
+    - Estos fragmentos (el `contexto`) y la pregunta del usuario (el `input`) se insertan automáticamente en una plantilla de prompt.
+    - El prompt completo se envía al modelo **`gemini-1.5-flash-latest`**, que genera una respuesta en lenguaje natural basada en el contexto proporcionado.
 
 ## 3. Aplicación de Conceptos Clave
 
-*(Detalla cómo usaste cada una de las tecnologías requeridas.)*
-
 - **Chunking:** Utilicé `RecursiveCharacterTextSplitter` de LangChain. Esta estrategia es efectiva porque intenta dividir el texto en separadores semánticos (como párrafos y saltos de línea) antes de recurrir a divisiones por caracteres, lo que ayuda a mantener la coherencia de los fragmentos.
 
-- **Embeddings:** Se empleó el modelo `models/embedding-001` de Google a través de `GoogleGenerativeAIEmbeddings` de LangChain. Este modelo es eficiente y está optimizado para funcionar con el ecosistema de Gemini, garantizando una buena calidad en la representación semántica del texto.
+- **Embeddings:** Se optó por **`HuggingFaceEmbeddings`** con el modelo `sentence-transformers/all-MiniLM-L6-v2`. Esta fue una decisión estratégica clave para evitar las limitaciones de la API de Google. El modelo se ejecuta localmente, es rápido y ofrece una excelente calidad para tareas de búsqueda semántica, sin coste ni cuotas.
 
-- **RAG:** La arquitectura RAG fue fundamental. En lugar de reentrenar un modelo, lo que sería costoso y complejo, RAG nos permite "aumentar" el conocimiento de un LLM existente con información específica y actualizada de nuestro dominio. Esto hace que el chatbot sea preciso y evita que alucine respuestas.
+- **RAG:** La arquitectura RAG fue implementada utilizando las herramientas modernas de LangChain (LCEL) con `create_retrieval_chain`. Esta cadena abstrae de forma elegante el proceso de: 1) tomar la pregunta del usuario, 2) recuperar documentos relevantes del `retriever` (nuestro vector store de MongoDB), y 3) pasar todo al `document_chain` para la generación final de la respuesta.
 
 - **Prompt Engineering:** El diseño del prompt fue clave para guiar el comportamiento del modelo. Se utilizó un rol explícito ("Eres un amigable y servicial agente de viajes...") y se le dieron instrucciones claras sobre qué hacer si no encontraba la respuesta en el contexto. Esto mejora la fiabilidad y la experiencia del usuario.
 
 ## 4. Ejemplo con Diferentes Temperaturas
 
-*(Aquí puedes mostrar cómo cambia la respuesta del chatbot al ajustar el parámetro `temperature` en el modelo `ChatGoogleGenerativeAI`.)*
+El parámetro `temperature` en el modelo `ChatGoogleGenerativeAI` controla la creatividad de las respuestas. Un valor bajo produce respuestas más predecibles, mientras que un valor alto genera respuestas más variadas.
 
-El parámetro `temperature` controla la creatividad o aleatoriedad de las respuestas del modelo. Un valor bajo produce respuestas más deterministas y predecibles, mientras que un valor alto genera respuestas más variadas y creativas.
+**Pregunta:** `¿Qué se puede hacer en el lado canadiense?`
+
+- **`temperature=0.1` (Baja creatividad):**
+  > *Respuesta esperada:* "En el lado canadiense, puedes visitar la Torre Skylon para obtener vistas panorámicas, disfrutar de las atracciones en Clifton Hill y tomar el crucero Hornblower Niagara para acercarte a las cataratas."
+  > *(La respuesta es muy directa y se ciñe estrictamente a los hechos del texto.)*
+
+- **`temperature=0.9` (Alta creatividad):**
+  > *Respuesta esperada:* "¡El lado canadiense es una maravilla! Imagínate subir a la majestuosa Torre Skylon para sentir que tocas el cielo y contemplar las cataratas desde arriba. Después, podrías sumergirte en la vibrante energía de Clifton Hill, que es como un parque de diversiones gigante. Y para una experiencia realmente inolvidable, ¡no te puedes perder el paseo en barco de Hornblower que te lleva justo al corazón rugiente de las cataratas!"
+  > *(La respuesta es más entusiasta, usa un lenguaje más descriptivo y añade un toque de emoción, aunque la información de fondo es la misma.)*
 
 **Pregunta:** `¿Qué es lo más emocionante que puedo hacer?`
 
 - **Temperatura = 0.3 (usada en el chatbot):**
   > *"Para una experiencia emocionante, te recomiendo la lancha rápida por el río Niágara, donde atravesarás los rápidos a toda velocidad. También puedes probar la tirolina para sobrevolar las cataratas a 670 metros de altura. Ambas son actividades muy populares para los aventureros."*
-  *(Respuesta directa, basada en los hechos del texto.)*
+  > *(Respuesta directa, basada en los hechos del texto.)*
 
 - **Temperatura = 0.9 (más creativa):**
   > *"¡Prepárate para la aventura! Si buscas adrenalina pura, imagínate surcando los furiosos rápidos del río Niágara en una lancha a motor, sintiendo la fuerza del agua a tu alrededor. O quizás prefieras volar como un pájaro sobre el majestuoso abismo de las cataratas en una tirolina que te dejará sin aliento. ¡Cualquiera de las dos será una historia increíble que contar!"*
